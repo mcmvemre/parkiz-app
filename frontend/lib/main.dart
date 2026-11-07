@@ -1,6 +1,7 @@
 import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:flutter_map/flutter_map.dart';
+import 'package:geolocator/geolocator.dart';
 import 'package:http/http.dart' as http;
 import 'package:latlong2/latlong.dart';
 
@@ -34,18 +35,57 @@ class ParkMapScreen extends StatefulWidget {
 
 class _ParkMapScreenState extends State<ParkMapScreen> {
   final String _backendUrl = 'https://parkiz-app.onrender.com/api/parks';
+  final MapController _mapController = MapController();
   
   List<dynamic> _parks = [];
   bool _isLoading = true;
+  bool _isFilterActive = false;
+  LatLng? _currentPosition;
 
   @override
   void initState() {
     super.initState();
     _fetchParks();
+    _determinePosition();
+  }
+
+  Future<void> _determinePosition() async {
+    bool serviceEnabled;
+    LocationPermission permission;
+
+    serviceEnabled = await Geolocator.isLocationServiceEnabled();
+    if (!serviceEnabled) return;
+
+    permission = await Geolocator.checkPermission();
+    if (permission == LocationPermission.denied) {
+      permission = await Geolocator.requestPermission();
+      if (permission == LocationPermission.denied) return;
+    }
+    
+    if (permission == LocationPermission.deniedForever) return;
+
+    final position = await Geolocator.getCurrentPosition();
+    setState(() {
+      _currentPosition = LatLng(position.latitude, position.longitude);
+    });
+  }
+
+  void _goToCurrentLocation() async {
+    if (_currentPosition != null) {
+      _mapController.move(_currentPosition!, 15.0);
+    } else {
+      await _determinePosition();
+      if (_currentPosition != null) {
+        _mapController.move(_currentPosition!, 15.0);
+      }
+    }
   }
 
   Future<void> _fetchParks() async {
-    setState(() => _isLoading = true);
+    setState(() {
+      _isLoading = true;
+      _isFilterActive = false;
+    });
     try {
       final response = await http.get(Uri.parse(_backendUrl));
       if (response.statusCode == 200) {
@@ -59,13 +99,57 @@ class _ParkMapScreenState extends State<ParkMapScreen> {
     }
   }
 
+  Future<void> _fetchNearbyParks() async {
+    if (_currentPosition == null) {
+      await _determinePosition();
+      if (_currentPosition == null) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('Konum bilgisi alınamadı!')),
+          );
+        }
+        return;
+      }
+    }
+
+    setState(() => _isLoading = true);
+
+    try {
+      final response = await http.post(
+        Uri.parse('$_backendUrl/nearby'),
+        headers: {"Content-Type": "application/json"},
+        body: json.encode({
+          "latitude": _currentPosition!.latitude,
+          "longitude": _currentPosition!.longitude,
+          "radius_km": 5.0,
+        }),
+      );
+
+      if (response.statusCode == 200) {
+        setState(() {
+          _parks = json.decode(utf8.decode(response.bodyBytes));
+          _isLoading = false;
+          _isFilterActive = true;
+        });
+        _goToCurrentLocation();
+      }
+    } catch (_) {
+      setState(() => _isLoading = false);
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Parkiz - Canlı Harita'),
+        title: Text(_isFilterActive ? 'Yakındaki Parklar (5 km)' : 'Parkiz - Canlı Harita'),
         backgroundColor: Theme.of(context).colorScheme.inversePrimary,
         actions: [
+          IconButton(
+            icon: Icon(_isFilterActive ? Icons.clear_all : Icons.near_me),
+            tooltip: _isFilterActive ? 'Tüm Parkları Göster' : 'Yakınımdakiler (5 km)',
+            onPressed: _isFilterActive ? _fetchParks : _fetchNearbyParks,
+          ),
           IconButton(
             icon: const Icon(Icons.refresh),
             onPressed: _fetchParks,
@@ -75,11 +159,16 @@ class _ParkMapScreenState extends State<ParkMapScreen> {
       body: _isLoading
           ? const Center(child: CircularProgressIndicator())
           : FlutterMap(
+              mapController: _mapController,
               options: MapOptions(
-                initialCenter: _parks.isNotEmpty
-                    ? LatLng((_parks[0]['latitude'] as num).toDouble(), (_parks[0]['longitude'] as num).toDouble())
-                    : const LatLng(40.9822, 29.0494),
+                initialCenter: _currentPosition ??
+                    (_parks.isNotEmpty
+                        ? LatLng((_parks[0]['latitude'] as num).toDouble(), (_parks[0]['longitude'] as num).toDouble())
+                        : const LatLng(40.9822, 29.0494)),
                 initialZoom: 13.0,
+                onTap: (tapPosition, point) {
+                  _showAddParkDialog(context, initialPoint: point);
+                },
               ),
               children: [
                 TileLayer(
@@ -87,26 +176,58 @@ class _ParkMapScreenState extends State<ParkMapScreen> {
                   userAgentPackageName: 'com.parkiz.app',
                 ),
                 MarkerLayer(
-                  markers: _parks.map((park) {
-                    return Marker(
-                      point: LatLng((park['latitude'] as num).toDouble(), (park['longitude'] as num).toDouble()),
-                      width: 45,
-                      height: 45,
-                      child: GestureDetector(
-                        onTap: () => _showParkDetails(context, park),
-                        child: const Icon(Icons.location_on, color: Colors.red, size: 40),
+                  markers: [
+                    if (_currentPosition != null)
+                      Marker(
+                        point: _currentPosition!,
+                        width: 40,
+                        height: 40,
+                        child: Container(
+                          decoration: BoxDecoration(
+                            color: Colors.blue.withOpacity(0.3),
+                            shape: BoxShape.circle,
+                            border: Border.all(color: Colors.blue, width: 2),
+                          ),
+                          child: const Center(
+                            child: Icon(Icons.my_location, color: Colors.blue, size: 22),
+                          ),
+                        ),
                       ),
-                    );
-                  }).toList(),
+                    ..._parks.map((park) {
+                      return Marker(
+                        point: LatLng((park['latitude'] as num).toDouble(), (park['longitude'] as num).toDouble()),
+                        width: 45,
+                        height: 45,
+                        child: GestureDetector(
+                          onTap: () => _showParkDetails(context, park),
+                          child: const Icon(Icons.location_on, color: Colors.red, size: 40),
+                        ),
+                      );
+                    }).toList(),
+                  ],
                 ),
               ],
             ),
-      floatingActionButton: FloatingActionButton.extended(
-        onPressed: () => _showAddParkDialog(context),
-        icon: const Icon(Icons.add_location_alt),
-        label: const Text('Yeni Park Ekle'),
-        backgroundColor: Colors.teal,
-        foregroundColor: Colors.white,
+      floatingActionButton: Column(
+        mainAxisAlignment: MainAxisAlignment.end,
+        children: [
+          FloatingActionButton(
+            heroTag: "btnGPS",
+            onPressed: _goToCurrentLocation,
+            backgroundColor: Colors.white,
+            foregroundColor: Colors.blue,
+            child: const Icon(Icons.my_location),
+          ),
+          const SizedBox(height: 10),
+          FloatingActionButton.extended(
+            heroTag: "btnAddPark",
+            onPressed: () => _showAddParkDialog(context),
+            icon: const Icon(Icons.add_location_alt),
+            label: const Text('Yeni Park Ekle'),
+            backgroundColor: Colors.teal,
+            foregroundColor: Colors.white,
+          ),
+        ],
       ),
     );
   }
@@ -118,107 +239,128 @@ class _ParkMapScreenState extends State<ParkMapScreen> {
     showModalBottomSheet(
       context: context,
       isScrollControlled: true,
+      useSafeArea: true,
+      constraints: BoxConstraints(
+        maxHeight: MediaQuery.of(context).size.height * 0.85,
+      ),
       shape: const RoundedRectangleBorder(
         borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
       ),
       builder: (context) {
-        return StatefulBuilder(
-          builder: (context, setModalState) {
-            return Padding(
-              padding: EdgeInsets.only(
-                top: 20, left: 20, right: 20,
-                bottom: MediaQuery.of(context).viewInsets.bottom + 20,
-              ),
-              child: SingleChildScrollView(
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(park['name'] ?? '', style: const TextStyle(fontSize: 22, fontWeight: FontWeight.bold)),
-                    const SizedBox(height: 4),
-                    Text(park['description'] ?? '', style: const TextStyle(color: Colors.grey)),
-                    const SizedBox(height: 12),
-                    
-                    // Engelli Erişilebilirlik Etiketleri
-                    Row(
-                      children: [
-                        if (park['has_accessible_ramp'] == true)
-                          Chip(
-                            avatar: const Icon(Icons.accessible, size: 18, color: Colors.blue),
-                            label: const Text('Engelli Rampası', style: TextStyle(fontSize: 12)),
-                            backgroundColor: Colors.blue.shade50,
-                          ),
-                        const SizedBox(width: 8),
-                        if (park['has_disabled_swing'] == true)
-                          Chip(
-                            avatar: const Icon(Icons.child_care, size: 18, color: Colors.purple),
-                            label: const Text('Engelsiz Salıncak', style: TextStyle(fontSize: 12)),
-                            backgroundColor: Colors.purple.shade50,
-                          ),
-                      ],
-                    ),
-                    const Divider(),
-                    const Text('Ebeveyn Yorumları', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
-                    const SizedBox(height: 8),
-
-                    if (comments.isEmpty)
-                      const Text('Henüz yorum yapılmamış. İlk yorumu siz yapın!', style: TextStyle(fontStyle: FontStyle.italic, color: Colors.grey))
-                    else
-                      ...comments.map((c) => ListTile(
-                            contentPadding: EdgeInsets.zero,
-                            leading: const CircleAvatar(child: Icon(Icons.person)),
-                            title: Text(c['author_name'] ?? 'Anonim Veli', style: const TextStyle(fontWeight: FontWeight.bold)),
-                            subtitle: Text(c['text'] ?? ''),
-                          )),
-
-                    const SizedBox(height: 12),
-                    Row(
-                      children: [
-                        Expanded(
-                          child: TextField(
-                            controller: commentController,
-                            decoration: const InputDecoration(
-                              hintText: 'Yorum yazın...',
-                              border: OutlineInputBorder(),
-                              contentPadding: EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-                            ),
-                          ),
-                        ),
-                        const SizedBox(width: 8),
-                        IconButton(
-                          icon: const Icon(Icons.send, color: Colors.teal),
-                          onPressed: () async {
-                            if (commentController.text.trim().isEmpty) return;
-                            final res = await http.post(
-                              Uri.parse('$_backendUrl/${park['id']}/comments'),
-                              headers: {"Content-Type": "application/json"},
-                              body: json.encode({"text": commentController.text, "author_name": "Veli"}),
-                            );
-
-                            if (res.statusCode == 200) {
-                              commentController.clear();
-                              Navigator.pop(context);
-                              _fetchParks();
-                            }
-                          },
-                        ),
-                      ],
-                    ),
-                  ],
+        return Padding(
+          padding: EdgeInsets.only(
+            top: 20, left: 20, right: 20,
+            bottom: MediaQuery.of(context).viewInsets.bottom + 20,
+          ),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Center(
+                child: Container(
+                  width: 40,
+                  height: 4,
+                  margin: const EdgeInsets.only(bottom: 12),
+                  decoration: BoxDecoration(
+                    color: Colors.grey.shade300,
+                    borderRadius: BorderRadius.circular(2),
+                  ),
                 ),
               ),
-            );
-          },
+              Text(park['name'] ?? '', style: const TextStyle(fontSize: 22, fontWeight: FontWeight.bold)),
+              const SizedBox(height: 4),
+              Text(park['description'] ?? '', style: const TextStyle(color: Colors.grey)),
+              const SizedBox(height: 12),
+              
+              Row(
+                children: [
+                  if (park['has_accessible_ramp'] == true)
+                    Chip(
+                      avatar: const Icon(Icons.accessible, size: 18, color: Colors.blue),
+                      label: const Text('Engelli Rampası', style: TextStyle(fontSize: 12)),
+                      backgroundColor: Colors.blue.shade50,
+                    ),
+                  if (park['has_accessible_ramp'] == true) const SizedBox(width: 8),
+                  if (park['has_disabled_swing'] == true)
+                    Chip(
+                      avatar: const Icon(Icons.child_care, size: 18, color: Colors.purple),
+                      label: const Text('Engelsiz Salıncak', style: TextStyle(fontSize: 12)),
+                      backgroundColor: Colors.purple.shade50,
+                    ),
+                ],
+              ),
+              const Divider(),
+              const Text('Ebeveyn Yorumları', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+              const SizedBox(height: 8),
+
+              Flexible(
+                child: SingleChildScrollView(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      if (comments.isEmpty)
+                        const Padding(
+                          padding: EdgeInsets.symmetric(vertical: 12.0),
+                          child: Text('Henüz yorum yapılmamış. İlk yorumu siz yapın!', style: TextStyle(fontStyle: FontStyle.italic, color: Colors.grey)),
+                        )
+                      else
+                        ...comments.map((c) => ListTile(
+                              contentPadding: EdgeInsets.zero,
+                              leading: const CircleAvatar(child: Icon(Icons.person)),
+                              title: Text(c['author_name'] ?? 'Anonim Veli', style: const TextStyle(fontWeight: FontWeight.bold)),
+                              subtitle: Text(c['text'] ?? ''),
+                            )),
+                    ],
+                  ),
+                ),
+              ),
+
+              const SizedBox(height: 12),
+              
+              Row(
+                children: [
+                  Expanded(
+                    child: TextField(
+                      controller: commentController,
+                      decoration: const InputDecoration(
+                        hintText: 'Yorum yazın...',
+                        border: OutlineInputBorder(),
+                        contentPadding: EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  IconButton(
+                    icon: const Icon(Icons.send, color: Colors.teal),
+                    onPressed: () async {
+                      if (commentController.text.trim().isEmpty) return;
+                      final res = await http.post(
+                        Uri.parse('$_backendUrl/${park['id']}/comments'),
+                        headers: {"Content-Type": "application/json"},
+                        body: json.encode({"text": commentController.text, "author_name": "Veli"}),
+                      );
+
+                      if (res.statusCode == 200) {
+                        commentController.clear();
+                        if (context.mounted) Navigator.pop(context);
+                        _fetchParks();
+                      }
+                    },
+                  ),
+                ],
+              ),
+            ],
+          ),
         );
       },
     );
   }
 
-  void _showAddParkDialog(BuildContext context) {
+  void _showAddParkDialog(BuildContext context, {LatLng? initialPoint}) {
     final nameController = TextEditingController();
     final descController = TextEditingController();
-    final latController = TextEditingController(text: '40.9850');
-    final lngController = TextEditingController(text: '29.0520');
+    final latController = TextEditingController(text: initialPoint?.latitude.toStringAsFixed(6) ?? '40.9850');
+    final lngController = TextEditingController(text: initialPoint?.longitude.toStringAsFixed(6) ?? '29.0520');
     bool hasRamp = false;
     bool hasSwing = false;
 
@@ -228,7 +370,7 @@ class _ParkMapScreenState extends State<ParkMapScreen> {
         return StatefulBuilder(
           builder: (context, setDialogState) {
             return AlertDialog(
-              title: const Text('Yeni Park Ekle'),
+              title: Text(initialPoint != null ? 'Tıklanan Noktaya Park Ekle' : 'Yeni Park Ekle'),
               content: SingleChildScrollView(
                 child: Column(
                   mainAxisSize: MainAxisSize.min,
@@ -254,6 +396,8 @@ class _ParkMapScreenState extends State<ParkMapScreen> {
                 TextButton(onPressed: () => Navigator.pop(context), child: const Text('İptal')),
                 ElevatedButton(
                   onPressed: () async {
+                    if (nameController.text.isEmpty) return;
+                    
                     final newPark = {
                       "name": nameController.text,
                       "description": descController.text,
