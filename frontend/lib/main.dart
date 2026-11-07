@@ -1,9 +1,9 @@
 import 'dart:convert';
+import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_map/flutter_map.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:http/http.dart' as http;
-import 'package:image_picker/image_picker.dart';
 import 'package:latlong2/latlong.dart';
 
 void main() {
@@ -37,7 +37,6 @@ class ParkMapScreen extends StatefulWidget {
 class _ParkMapScreenState extends State<ParkMapScreen> {
   final String _backendUrl = 'https://parkiz-app.onrender.com/api/parks';
   final MapController _mapController = MapController();
-  final ImagePicker _picker = ImagePicker();
   
   List<dynamic> _parks = [];
   bool _isLoading = true;
@@ -140,24 +139,39 @@ class _ParkMapScreenState extends State<ParkMapScreen> {
     }
   }
 
-  Future<void> _uploadParkImage(int parkId) async {
-    final XFile? image = await _picker.pickImage(source: ImageSource.gallery);
-    if (image == null) return;
+  // Galeri / Dosya Sisteminden Kesintisiz Fotoğraf Seçip Yükleme
+  Future<void> _pickAndUploadImage(int parkId) async {
+    try {
+      FilePickerResult? result = await FilePicker.platform.pickFiles(
+        type: FileType.image,
+        withData: true,
+      );
 
-    var request = http.MultipartRequest(
-      'POST',
-      Uri.parse('$_backendUrl/$parkId/upload-image'),
-    );
-    request.files.add(await http.MultipartFile.fromPath('file', image.path));
+      if (result != null && result.files.first.bytes != null) {
+        final bytes = result.files.first.bytes!;
+        final base64Image = 'data:image/jpeg;base64,${base64Encode(bytes)}';
 
-    var streamedResponse = await request.send();
-    if (streamedResponse.statusCode == 200) {
+        final res = await http.post(
+          Uri.parse('$_backendUrl/$parkId/upload-image'),
+          headers: {"Content-Type": "application/json"},
+          body: json.encode({"image_url": base64Image}),
+        );
+
+        if (res.statusCode == 200) {
+          _fetchParks();
+          if (mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(content: Text('Fotoğraf başarıyla yüklendi!')),
+            );
+          }
+        }
+      }
+    } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Fotoğraf başarıyla yüklendi!')),
+          SnackBar(content: Text('Yükleme hatası: $e')),
         );
       }
-      _fetchParks();
     }
   }
 
@@ -265,7 +279,7 @@ class _ParkMapScreenState extends State<ParkMapScreen> {
       isScrollControlled: true,
       useSafeArea: true,
       constraints: BoxConstraints(
-        maxHeight: MediaQuery.of(context).size.height * 0.85,
+        maxHeight: MediaQuery.of(context).size.height * 0.90,
       ),
       shape: const RoundedRectangleBorder(
         borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
@@ -273,12 +287,11 @@ class _ParkMapScreenState extends State<ParkMapScreen> {
       builder: (context) {
         return Padding(
           padding: EdgeInsets.only(
-            top: 20, left: 20, right: 20,
-            bottom: MediaQuery.of(context).viewInsets.bottom + 20,
+            top: 16, left: 20, right: 20,
+            bottom: MediaQuery.of(context).viewInsets.bottom + 16,
           ),
           child: Column(
             mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               Center(
                 child: Container(
@@ -292,92 +305,112 @@ class _ParkMapScreenState extends State<ParkMapScreen> {
                 ),
               ),
 
-              ClipRRect(
-                borderRadius: BorderRadius.circular(12),
-                child: imageUrl != null && imageUrl.toString().isNotEmpty
-                    ? Image.network(
-                        imageUrl,
-                        height: 160,
-                        width: double.infinity,
-                        fit: BoxFit.cover,
-                      )
-                    : Container(
-                        height: 120,
-                        width: double.infinity,
-                        color: Colors.grey.shade200,
-                        child: Column(
-                          mainAxisAlignment: MainAxisAlignment.center,
-                          children: [
-                            const Icon(Icons.image_not_supported, color: Colors.grey, size: 40),
-                            const SizedBox(height: 8),
-                            ElevatedButton.icon(
-                              onPressed: () {
-                                Navigator.pop(context);
-                                _uploadParkImage(park['id']);
-                              },
-                              icon: const Icon(Icons.add_a_photo, size: 18),
-                              label: const Text('Fotoğraf Ekle'),
-                            ),
-                          ],
-                        ),
-                      ),
-              ),
-              const SizedBox(height: 12),
-
-              Row(
-                mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                children: [
-                  Expanded(
-                    child: Text(park['name'] ?? '', style: const TextStyle(fontSize: 22, fontWeight: FontWeight.bold)),
-                  ),
-                  IconButton(
-                    icon: const Icon(Icons.add_a_photo, color: Colors.teal),
-                    tooltip: 'Fotoğrafı Değiştir',
-                    onPressed: () {
-                      Navigator.pop(context);
-                      _uploadParkImage(park['id']);
-                    },
-                  ),
-                ],
-              ),
-              Text(park['description'] ?? '', style: const TextStyle(color: Colors.grey)),
-              const SizedBox(height: 12),
-              
-              Row(
-                children: [
-                  if (park['has_accessible_ramp'] == true)
-                    Chip(
-                      avatar: const Icon(Icons.accessible, size: 18, color: Colors.blue),
-                      label: const Text('Engelli Rampası', style: TextStyle(fontSize: 12)),
-                      backgroundColor: Colors.blue.shade50,
-                    ),
-                  if (park['has_accessible_ramp'] == true) const SizedBox(width: 8),
-                  if (park['has_disabled_swing'] == true)
-                    Chip(
-                      avatar: const Icon(Icons.child_care, size: 18, color: Colors.purple),
-                      label: const Text('Engelsiz Salıncak', style: TextStyle(fontSize: 12)),
-                      backgroundColor: Colors.purple.shade50,
-                    ),
-                ],
-              ),
-              const Divider(),
-              const Text('Ebeveyn Yorumları', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
-              const SizedBox(height: 8),
-
-              Flexible(
+              Expanded(
                 child: SingleChildScrollView(
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
+                      ClipRRect(
+                        borderRadius: BorderRadius.circular(12),
+                        child: imageUrl != null && imageUrl.toString().isNotEmpty
+                            ? (imageUrl.toString().startsWith('data:image')
+                                ? Image.memory(
+                                    base64Decode(imageUrl.toString().split(',').last),
+                                    height: 150,
+                                    width: double.infinity,
+                                    fit: BoxFit.cover,
+                                  )
+                                : Image.network(
+                                    imageUrl,
+                                    height: 150,
+                                    width: double.infinity,
+                                    fit: BoxFit.cover,
+                                    errorBuilder: (context, error, stackTrace) => Container(
+                                      height: 110,
+                                      color: Colors.grey.shade200,
+                                      child: const Center(child: Text('Fotoğraf yüklenemedi')),
+                                    ),
+                                  ))
+                            : Container(
+                                height: 110,
+                                width: double.infinity,
+                                color: Colors.grey.shade200,
+                                child: Column(
+                                  mainAxisAlignment: MainAxisAlignment.center,
+                                  children: [
+                                    const Icon(Icons.image_not_supported, color: Colors.grey, size: 36),
+                                    const SizedBox(height: 6),
+                                    ElevatedButton.icon(
+                                      onPressed: () {
+                                        Navigator.pop(context);
+                                        _pickAndUploadImage(park['id']);
+                                      },
+                                      icon: const Icon(Icons.add_a_photo, size: 16),
+                                      label: const Text('Galeriden Fotoğraf Seç'),
+                                    ),
+                                  ],
+                                ),
+                              ),
+                      ),
+                      const SizedBox(height: 10),
+
+                      Row(
+                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                        children: [
+                          Expanded(
+                            child: Text(
+                              park['name'] ?? '',
+                              style: const TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
+                            ),
+                          ),
+                          IconButton(
+                            icon: const Icon(Icons.add_a_photo, color: Colors.teal),
+                            tooltip: 'Fotoğrafı Değiştir',
+                            onPressed: () {
+                              Navigator.pop(context);
+                              _pickAndUploadImage(park['id']);
+                            },
+                          ),
+                        ],
+                      ),
+                      if (park['description'] != null && park['description'].toString().isNotEmpty)
+                        Text(park['description'], style: const TextStyle(color: Colors.grey)),
+                      const SizedBox(height: 10),
+                      
+                      Row(
+                        children: [
+                          if (park['has_accessible_ramp'] == true)
+                            Chip(
+                              avatar: const Icon(Icons.accessible, size: 16, color: Colors.blue),
+                              label: const Text('Engelli Rampası', style: TextStyle(fontSize: 11)),
+                              backgroundColor: Colors.blue.shade50,
+                            ),
+                          if (park['has_accessible_ramp'] == true) const SizedBox(width: 8),
+                          if (park['has_disabled_swing'] == true)
+                            Chip(
+                              avatar: const Icon(Icons.child_care, size: 16, color: Colors.purple),
+                              label: const Text('Engelsiz Salıncak', style: TextStyle(fontSize: 11)),
+                              backgroundColor: Colors.purple.shade50,
+                            ),
+                        ],
+                      ),
+                      const Divider(),
+                      const Text('Ebeveyn Yorumları', style: TextStyle(fontSize: 15, fontWeight: FontWeight.bold)),
+                      const SizedBox(height: 6),
+
                       if (comments.isEmpty)
                         const Padding(
-                          padding: EdgeInsets.symmetric(vertical: 12.0),
-                          child: Text('Henüz yorum yapılmamış. İlk yorumu siz yapın!', style: TextStyle(fontStyle: FontStyle.italic, color: Colors.grey)),
+                          padding: EdgeInsets.symmetric(vertical: 8.0),
+                          child: Text(
+                            'Henüz yorum yapılmamış. İlk yorumu siz yapın!',
+                            style: TextStyle(fontStyle: FontStyle.italic, color: Colors.grey),
+                          ),
                         )
                       else
                         ...comments.map((c) => ListTile(
+                              dense: true,
                               contentPadding: EdgeInsets.zero,
-                              leading: const CircleAvatar(child: Icon(Icons.person)),
+                              leading: const CircleAvatar(radius: 16, child: Icon(Icons.person, size: 18)),
                               title: Text(c['author_name'] ?? 'Anonim Veli', style: const TextStyle(fontWeight: FontWeight.bold)),
                               subtitle: Text(c['text'] ?? ''),
                             )),
@@ -386,8 +419,8 @@ class _ParkMapScreenState extends State<ParkMapScreen> {
                 ),
               ),
 
-              const SizedBox(height: 12),
-              
+              const SizedBox(height: 8),
+
               Row(
                 children: [
                   Expanded(
@@ -432,7 +465,6 @@ class _ParkMapScreenState extends State<ParkMapScreen> {
     final descController = TextEditingController();
     final latController = TextEditingController(text: initialPoint?.latitude.toStringAsFixed(6) ?? '40.9850');
     final lngController = TextEditingController(text: initialPoint?.longitude.toStringAsFixed(6) ?? '29.0520');
-    final imageController = TextEditingController();
     bool hasRamp = false;
     bool hasSwing = false;
 
@@ -449,7 +481,6 @@ class _ParkMapScreenState extends State<ParkMapScreen> {
                   children: [
                     TextField(controller: nameController, decoration: const InputDecoration(labelText: 'Park Adı')),
                     TextField(controller: descController, decoration: const InputDecoration(labelText: 'Açıklama')),
-                    TextField(controller: imageController, decoration: const InputDecoration(labelText: 'Fotoğraf URL (Opsiyonel)')),
                     TextField(controller: latController, decoration: const InputDecoration(labelText: 'Enlem (Lat)')),
                     TextField(controller: lngController, decoration: const InputDecoration(labelText: 'Boylam (Lng)')),
                     CheckboxListTile(
@@ -474,7 +505,6 @@ class _ParkMapScreenState extends State<ParkMapScreen> {
                     final newPark = {
                       "name": nameController.text,
                       "description": descController.text,
-                      "image_url": imageController.text.isNotEmpty ? imageController.text : null,
                       "latitude": double.parse(latController.text),
                       "longitude": double.parse(lngController.text),
                       "rating": 5.0,

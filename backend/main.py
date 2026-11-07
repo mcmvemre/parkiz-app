@@ -1,12 +1,11 @@
 import os
 from typing import List, Optional
-from fastapi import FastAPI, Depends, HTTPException, UploadFile, File
+from fastapi import FastAPI, Depends, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from sqlalchemy import create_engine, Column, Integer, String, Float, Text, Boolean, ForeignKey, text
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, Session, relationship
-import requests
 
 DATABASE_URL = os.getenv(
     "DATABASE_URL",
@@ -20,7 +19,6 @@ engine = create_engine(DATABASE_URL)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
 
-# Park Veritabanı Modeli
 class ParkModel(Base):
     __tablename__ = "parks"
 
@@ -32,11 +30,10 @@ class ParkModel(Base):
     rating = Column(Float, default=0.0)
     has_accessible_ramp = Column(Boolean, default=False)
     has_disabled_swing = Column(Boolean, default=False)
-    image_url = Column(Text, nullable=True)  # Park Fotoğrafı URL'si
+    image_url = Column(Text, nullable=True)
 
     comments = relationship("CommentModel", back_populates="park", cascade="all, delete-orphan")
 
-# Yorum Veritabanı Modeli
 class CommentModel(Base):
     __tablename__ = "comments"
 
@@ -50,7 +47,6 @@ class CommentModel(Base):
 
 Base.metadata.create_all(bind=engine)
 
-# Pydantic Şemaları
 class CommentCreate(BaseModel):
     author_name: Optional[str] = "Anonim Veli"
     text: str
@@ -85,7 +81,10 @@ class NearbyParkRequest(BaseModel):
     longitude: float
     radius_km: Optional[float] = 5.0
 
-app = FastAPI(title="Parkiz API", version="1.4.0")
+class ImageUploadRequest(BaseModel):
+    image_url: str
+
+app = FastAPI(title="Parkiz API", version="1.5.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -160,29 +159,12 @@ def get_nearby_parks(req: NearbyParkRequest, db: Session = Depends(get_db)):
     return db.query(ParkModel).filter(ParkModel.id.in_(park_ids)).all()
 
 @app.post("/api/parks/{park_id}/upload-image")
-async def upload_park_image(park_id: int, file: UploadFile = File(...), db: Session = Depends(get_db)):
+def update_park_image(park_id: int, req: ImageUploadRequest, db: Session = Depends(get_db)):
     db_park = db.query(ParkModel).filter(ParkModel.id == park_id).first()
     if not db_park:
         raise HTTPException(status_code=404, detail="Park bulunamadı")
 
-    # Cloudinary Unsigned Upload veya Hızlı Resim servisi entegrasyonu
-    upload_url = "https://api.cloudinary.com/v1_1/demo/image/upload"
-    files = {'file': (file.filename, await file.read(), file.content_type)}
-    data = {'upload_preset': 'unsigned_preset'}
-
-    try:
-        response = requests.post(upload_url, files=files, data=data)
-        if response.status_code == 200:
-            res_data = response.json()
-            image_url = res_data.get("secure_url")
-            db_park.image_url = image_url
-            db.commit()
-            db.refresh(db_park)
-            return {"message": "Resim yüklendi", "image_url": image_url}
-        else:
-            # Yedek görsel linki doğrudan kaydetme fallback
-            db_park.image_url = "https://images.unsplash.com/photo-1519331379826-f10be5486c6f?q=80&w=800"
-            db.commit()
-            return {"message": "Resim varsayılan olarak güncellendi", "image_url": db_park.image_url}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    db_park.image_url = req.image_url
+    db.commit()
+    db.refresh(db_park)
+    return {"message": "Resim güncellendi", "image_url": db_park.image_url}
