@@ -1,5 +1,4 @@
 import 'dart:convert';
-import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_map/flutter_map.dart';
 import 'package:geolocator/geolocator.dart';
@@ -35,13 +34,17 @@ class ParkMapScreen extends StatefulWidget {
 }
 
 class _ParkMapScreenState extends State<ParkMapScreen> {
-  final String _backendUrl = 'https://parkiz-app.onrender.com/api/parks';
+  final String _baseUrl = 'https://parkiz-app.onrender.com/api';
   final MapController _mapController = MapController();
   
   List<dynamic> _parks = [];
   bool _isLoading = true;
   bool _isFilterActive = false;
   LatLng? _currentPosition;
+
+  // Kullanıcı Oturum Bilgileri
+  String? _authToken;
+  String? _currentUserName;
 
   @override
   void initState() {
@@ -88,7 +91,7 @@ class _ParkMapScreenState extends State<ParkMapScreen> {
       _isFilterActive = false;
     });
     try {
-      final response = await http.get(Uri.parse(_backendUrl));
+      final response = await http.get(Uri.parse('$_baseUrl/parks'));
       if (response.statusCode == 200) {
         setState(() {
           _parks = json.decode(utf8.decode(response.bodyBytes));
@@ -117,7 +120,7 @@ class _ParkMapScreenState extends State<ParkMapScreen> {
 
     try {
       final response = await http.post(
-        Uri.parse('$_backendUrl/nearby'),
+        Uri.parse('$_baseUrl/parks/nearby'),
         headers: {"Content-Type": "application/json"},
         body: json.encode({
           "latitude": _currentPosition!.latitude,
@@ -139,40 +142,174 @@ class _ParkMapScreenState extends State<ParkMapScreen> {
     }
   }
 
-  // Galeri / Dosya Sisteminden Kesintisiz Fotoğraf Seçip Yükleme
-  Future<void> _pickAndUploadImage(int parkId) async {
-    try {
-      FilePickerResult? result = await FilePicker.platform.pickFiles(
-        type: FileType.image,
-        withData: true,
-      );
+  // Giriş Yap Dialog
+  void _showLoginDialog() {
+    final emailController = TextEditingController();
+    final passwordController = TextEditingController();
 
-      if (result != null && result.files.first.bytes != null) {
-        final bytes = result.files.first.bytes!;
-        final base64Image = 'data:image/jpeg;base64,${base64Encode(bytes)}';
+    showDialog(
+      context: context,
+      builder: (context) {
+        return AlertDialog(
+          title: const Text('Veli Girişi'),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              TextField(controller: emailController, decoration: const InputDecoration(labelText: 'E-posta')),
+              TextField(controller: passwordController, obscureText: true, decoration: const InputDecoration(labelText: 'Şifre')),
+            ],
+          ),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(context), child: const Text('İptal')),
+            TextButton(
+              onPressed: () {
+                Navigator.pop(context);
+                _showRegisterDialog();
+              },
+              child: const Text('Kayıt Ol'),
+            ),
+            ElevatedButton(
+              onPressed: () async {
+                final response = await http.post(
+                  Uri.parse('$_baseUrl/auth/login'),
+                  headers: {"Content-Type": "application/x-www-form-urlencoded"},
+                  body: {
+                    "username": emailController.text.trim(),
+                    "password": passwordController.text.trim(),
+                  },
+                );
 
-        final res = await http.post(
-          Uri.parse('$_backendUrl/$parkId/upload-image'),
-          headers: {"Content-Type": "application/json"},
-          body: json.encode({"image_url": base64Image}),
+                if (response.statusCode == 200) {
+                  final data = json.decode(utf8.decode(response.bodyBytes));
+                  setState(() {
+                    _authToken = data['access_token'];
+                    _currentUserName = data['user']['full_name'];
+                  });
+                  if (context.mounted) Navigator.pop(context);
+                  if (mounted) {
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      SnackBar(content: Text('Hoş geldiniz, $_currentUserName!')),
+                    );
+                  }
+                } else {
+                  if (mounted) {
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      const SnackBar(content: Text('Giriş başarısız. Bilgilerinizi kontrol edin.')),
+                    );
+                  }
+                }
+              },
+              child: const Text('Giriş Yap'),
+            ),
+          ],
         );
+      },
+    );
+  }
 
-        if (res.statusCode == 200) {
-          _fetchParks();
-          if (mounted) {
-            ScaffoldMessenger.of(context).showSnackBar(
-              const SnackBar(content: Text('Fotoğraf başarıyla yüklendi!')),
-            );
-          }
-        }
-      }
-    } catch (e) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Yükleme hatası: $e')),
+  // Kayıt Ol Dialog
+  void _showRegisterDialog() {
+    final nameController = TextEditingController();
+    final emailController = TextEditingController();
+    final passwordController = TextEditingController();
+
+    showDialog(
+      context: context,
+      builder: (context) {
+        return AlertDialog(
+          title: const Text('Yeni Veli Kaydı'),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              TextField(controller: nameController, decoration: const InputDecoration(labelText: 'Ad Soyad')),
+              TextField(controller: emailController, decoration: const InputDecoration(labelText: 'E-posta')),
+              TextField(controller: passwordController, obscureText: true, decoration: const InputDecoration(labelText: 'Şifre')),
+            ],
+          ),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(context), child: const Text('İptal')),
+            ElevatedButton(
+              onPressed: () async {
+                final response = await http.post(
+                  Uri.parse('$_baseUrl/auth/register'),
+                  headers: {"Content-Type": "application/json"},
+                  body: json.encode({
+                    "full_name": nameController.text.trim(),
+                    "email": emailController.text.trim(),
+                    "password": passwordController.text.trim(),
+                  }),
+                );
+
+                if (response.statusCode == 200) {
+                  if (context.mounted) Navigator.pop(context);
+                  if (mounted) {
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      const SnackBar(content: Text('Kayıt başarılı! Şimdi giriş yapabilirsiniz.')),
+                    );
+                  }
+                  _showLoginDialog();
+                } else {
+                  if (mounted) {
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      const SnackBar(content: Text('Kayıt başarısız. E-posta adresi kullanımda olabilir.')),
+                    );
+                  }
+                }
+              },
+              child: const Text('Kayıt Ol'),
+            ),
+          ],
         );
-      }
-    }
+      },
+    );
+  }
+
+  void _showImageUploadDialog(int parkId) {
+    final urlController = TextEditingController();
+
+    showDialog(
+      context: context,
+      builder: (context) {
+        return AlertDialog(
+          title: const Text('Park Fotoğrafı URL Ekle'),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Text('Parka ait fotoğrafın internet bağlantısını (URL) yapıştırın:'),
+              const SizedBox(height: 12),
+              TextField(
+                controller: urlController,
+                decoration: const InputDecoration(
+                  labelText: 'Fotoğraf URL',
+                  hintText: 'https://...',
+                  border: OutlineInputBorder(),
+                ),
+              ),
+            ],
+          ),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(context), child: const Text('İptal')),
+            ElevatedButton(
+              onPressed: () async {
+                if (urlController.text.trim().isEmpty) return;
+
+                final res = await http.post(
+                  Uri.parse('$_baseUrl/parks/$parkId/upload-image'),
+                  headers: {"Content-Type": "application/json"},
+                  body: json.encode({"image_url": urlController.text.trim()}),
+                );
+
+                if (res.statusCode == 200) {
+                  if (context.mounted) Navigator.pop(context);
+                  _fetchParks();
+                }
+              },
+              child: const Text('Kaydet'),
+            ),
+          ],
+        );
+      },
+    );
   }
 
   @override
@@ -182,6 +319,37 @@ class _ParkMapScreenState extends State<ParkMapScreen> {
         title: Text(_isFilterActive ? 'Yakındaki Parklar (5 km)' : 'Parkiz - Canlı Harita'),
         backgroundColor: Theme.of(context).colorScheme.inversePrimary,
         actions: [
+          // Giriş Yap / Profil Butonu
+          IconButton(
+            icon: Icon(_authToken != null ? Icons.account_circle : Icons.login),
+            tooltip: _authToken != null ? _currentUserName : 'Giriş Yap / Kayıt Ol',
+            onPressed: () {
+              if (_authToken != null) {
+                showDialog(
+                  context: context,
+                  builder: (context) => AlertDialog(
+                    title: Text(_currentUserName ?? 'Kullanıcı'),
+                    content: const Text('Oturum kapatılsın mı?'),
+                    actions: [
+                      TextButton(onPressed: () => Navigator.pop(context), child: const Text('İptal')),
+                      ElevatedButton(
+                        onPressed: () {
+                          setState(() {
+                            _authToken = null;
+                            _currentUserName = null;
+                          });
+                          Navigator.pop(context);
+                        },
+                        child: const Text('Çıkış Yap'),
+                      ),
+                    ],
+                  ),
+                );
+              } else {
+                _showLoginDialog();
+              }
+            },
+          ),
           IconButton(
             icon: Icon(_isFilterActive ? Icons.clear_all : Icons.near_me),
             tooltip: _isFilterActive ? 'Tüm Parkları Göster' : 'Yakınımdakiler (5 km)',
@@ -313,24 +481,17 @@ class _ParkMapScreenState extends State<ParkMapScreen> {
                       ClipRRect(
                         borderRadius: BorderRadius.circular(12),
                         child: imageUrl != null && imageUrl.toString().isNotEmpty
-                            ? (imageUrl.toString().startsWith('data:image')
-                                ? Image.memory(
-                                    base64Decode(imageUrl.toString().split(',').last),
-                                    height: 150,
-                                    width: double.infinity,
-                                    fit: BoxFit.cover,
-                                  )
-                                : Image.network(
-                                    imageUrl,
-                                    height: 150,
-                                    width: double.infinity,
-                                    fit: BoxFit.cover,
-                                    errorBuilder: (context, error, stackTrace) => Container(
-                                      height: 110,
-                                      color: Colors.grey.shade200,
-                                      child: const Center(child: Text('Fotoğraf yüklenemedi')),
-                                    ),
-                                  ))
+                            ? Image.network(
+                                imageUrl,
+                                height: 150,
+                                width: double.infinity,
+                                fit: BoxFit.cover,
+                                errorBuilder: (context, error, stackTrace) => Container(
+                                  height: 110,
+                                  color: Colors.grey.shade200,
+                                  child: const Center(child: Text('Fotoğraf yüklenemedi')),
+                                ),
+                              )
                             : Container(
                                 height: 110,
                                 width: double.infinity,
@@ -343,10 +504,10 @@ class _ParkMapScreenState extends State<ParkMapScreen> {
                                     ElevatedButton.icon(
                                       onPressed: () {
                                         Navigator.pop(context);
-                                        _pickAndUploadImage(park['id']);
+                                        _showImageUploadDialog(park['id']);
                                       },
                                       icon: const Icon(Icons.add_a_photo, size: 16),
-                                      label: const Text('Galeriden Fotoğraf Seç'),
+                                      label: const Text('Fotoğraf URL Ekle'),
                                     ),
                                   ],
                                 ),
@@ -368,7 +529,7 @@ class _ParkMapScreenState extends State<ParkMapScreen> {
                             tooltip: 'Fotoğrafı Değiştir',
                             onPressed: () {
                               Navigator.pop(context);
-                              _pickAndUploadImage(park['id']);
+                              _showImageUploadDialog(park['id']);
                             },
                           ),
                         ],
@@ -438,10 +599,19 @@ class _ParkMapScreenState extends State<ParkMapScreen> {
                     icon: const Icon(Icons.send, color: Colors.teal),
                     onPressed: () async {
                       if (commentController.text.trim().isEmpty) return;
+
+                      Map<String, String> headers = {"Content-Type": "application/json"};
+                      if (_authToken != null) {
+                        headers["Authorization"] = "Bearer $_authToken";
+                      }
+
                       final res = await http.post(
-                        Uri.parse('$_backendUrl/${park['id']}/comments'),
-                        headers: {"Content-Type": "application/json"},
-                        body: json.encode({"text": commentController.text, "author_name": "Veli"}),
+                        Uri.parse('$_baseUrl/parks/${park['id']}/comments'),
+                        headers: headers,
+                        body: json.encode({
+                          "text": commentController.text,
+                          "author_name": _currentUserName ?? "Veli"
+                        }),
                       );
 
                       if (res.statusCode == 200) {
@@ -465,6 +635,7 @@ class _ParkMapScreenState extends State<ParkMapScreen> {
     final descController = TextEditingController();
     final latController = TextEditingController(text: initialPoint?.latitude.toStringAsFixed(6) ?? '40.9850');
     final lngController = TextEditingController(text: initialPoint?.longitude.toStringAsFixed(6) ?? '29.0520');
+    final imageController = TextEditingController();
     bool hasRamp = false;
     bool hasSwing = false;
 
@@ -481,6 +652,7 @@ class _ParkMapScreenState extends State<ParkMapScreen> {
                   children: [
                     TextField(controller: nameController, decoration: const InputDecoration(labelText: 'Park Adı')),
                     TextField(controller: descController, decoration: const InputDecoration(labelText: 'Açıklama')),
+                    TextField(controller: imageController, decoration: const InputDecoration(labelText: 'Fotoğraf URL (Opsiyonel)')),
                     TextField(controller: latController, decoration: const InputDecoration(labelText: 'Enlem (Lat)')),
                     TextField(controller: lngController, decoration: const InputDecoration(labelText: 'Boylam (Lng)')),
                     CheckboxListTile(
@@ -505,6 +677,7 @@ class _ParkMapScreenState extends State<ParkMapScreen> {
                     final newPark = {
                       "name": nameController.text,
                       "description": descController.text,
+                      "image_url": imageController.text.isNotEmpty ? imageController.text : null,
                       "latitude": double.parse(latController.text),
                       "longitude": double.parse(lngController.text),
                       "rating": 5.0,
@@ -513,7 +686,7 @@ class _ParkMapScreenState extends State<ParkMapScreen> {
                     };
 
                     final res = await http.post(
-                      Uri.parse(_backendUrl),
+                      Uri.parse('$_baseUrl/parks'),
                       headers: {"Content-Type": "application/json"},
                       body: json.encode(newPark),
                     );

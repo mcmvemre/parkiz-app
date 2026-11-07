@@ -1,11 +1,18 @@
 import os
+import datetime
 from typing import List, Optional
-from fastapi import FastAPI, Depends, HTTPException
+from fastapi import FastAPI, Depends, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from pydantic import BaseModel
 from sqlalchemy import create_engine, Column, Integer, String, Float, Text, Boolean, ForeignKey, text
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, Session, relationship
+from passlib.context import CryptContext
+import jwt
+
+SECRET_KEY = os.getenv("SECRET_KEY", "parkiz_super_secret_key_2026")
+ALGORITHM = "HS256"
 
 DATABASE_URL = os.getenv(
     "DATABASE_URL",
@@ -18,6 +25,18 @@ if DATABASE_URL and DATABASE_URL.startswith("postgres://"):
 engine = create_engine(DATABASE_URL)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
+
+pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/auth/login", optional=True)
+
+# Veritabanı Modelleri
+class UserModel(Base):
+    __tablename__ = "users"
+
+    id = Column(Integer, primary_key=True, index=True)
+    full_name = Column(String(100), nullable=False)
+    email = Column(String(255), unique=True, index=True, nullable=False)
+    hashed_password = Column(String(255), nullable=False)
 
 class ParkModel(Base):
     __tablename__ = "parks"
@@ -46,6 +65,25 @@ class CommentModel(Base):
     park = relationship("ParkModel", back_populates="comments")
 
 Base.metadata.create_all(bind=engine)
+
+# Pydantic Şemaları
+class UserRegister(BaseModel):
+    full_name: str
+    email: str
+    password: str
+
+class UserResponse(BaseModel):
+    id: int
+    full_name: str
+    email: str
+
+    class Config:
+        from_attributes = True
+
+class Token(BaseModel):
+    access_token: str
+    token_type: str
+    user: UserResponse
 
 class CommentCreate(BaseModel):
     author_name: Optional[str] = "Anonim Veli"
@@ -84,7 +122,7 @@ class NearbyParkRequest(BaseModel):
 class ImageUploadRequest(BaseModel):
     image_url: str
 
-app = FastAPI(title="Parkiz API", version="1.5.0")
+app = FastAPI(title="Parkiz API", version="2.0.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -101,10 +139,67 @@ def get_db():
     finally:
         db.close()
 
+# Yardımcı Auth Fonksiyonları
+def verify_password(plain_password, hashed_password):
+    return pwd_context.verify(plain_password, hashed_password)
+
+def get_password_hash(password):
+    return pwd_context.hash(password)
+
+def create_access_token(data: dict):
+    to_encode = data.copy()
+    expire = datetime.datetime.utcnow() + datetime.timedelta(days=7)
+    to_encode.update({"exp": expire})
+    return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
+
+def get_current_user_optional(token: Optional[str] = Depends(oauth2_scheme), db: Session = Depends(get_db)) -> Optional[UserModel]:
+    if not token:
+        return None
+    try:
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        email: str = payload.get("sub")
+        if email is None:
+            return None
+    except Exception:
+        return None
+    return db.query(UserModel).filter(UserModel.email == email).first()
+
 @app.get("/")
 def read_root():
-    return {"message": "Parkiz Backend Live!"}
+    return {"message": "Parkiz Auth & Map Backend Live!"}
 
+# AUTH ENDPOINT'LERİ
+@app.post("/api/auth/register", response_model=UserResponse)
+def register(user_data: UserRegister, db: Session = Depends(get_db)):
+    existing_user = db.query(UserModel).filter(UserModel.email == user_data.email).first()
+    if existing_user:
+        raise HTTPException(status_code=400, detail="Bu e-posta adresi zaten kayıtlı.")
+    
+    hashed_pwd = get_password_hash(user_data.password)
+    new_user = UserModel(
+        full_name=user_data.full_name,
+        email=user_data.email,
+        hashed_password=hashed_pwd
+    )
+    db.add(new_user)
+    db.commit()
+    db.refresh(new_user)
+    return new_user
+
+@app.post("/api/auth/login", response_model=Token)
+def login(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):
+    user = db.query(UserModel).filter(UserModel.email == form_data.username).first()
+    if not user or not verify_password(form_data.password, user.hashed_password):
+        raise HTTPException(status_code=400, detail="E-posta veya şifre hatalı.")
+    
+    access_token = create_access_token(data={"sub": user.email})
+    return {
+        "access_token": access_token,
+        "token_type": "bearer",
+        "user": user
+    }
+
+# PARK & YORUM ENDPOINT'LERİ
 @app.get("/api/parks", response_model=List[ParkResponse])
 def get_parks(db: Session = Depends(get_db)):
     return db.query(ParkModel).all()
@@ -118,12 +213,18 @@ def create_park(park: ParkCreate, db: Session = Depends(get_db)):
     return db_park
 
 @app.post("/api/parks/{park_id}/comments", response_model=CommentResponse)
-def add_comment(park_id: int, comment: CommentCreate, db: Session = Depends(get_db)):
+def add_comment(
+    park_id: int, 
+    comment: CommentCreate, 
+    db: Session = Depends(get_db),
+    current_user: Optional[UserModel] = Depends(get_current_user_optional)
+):
     db_park = db.query(ParkModel).filter(ParkModel.id == park_id).first()
     if not db_park:
         raise HTTPException(status_code=404, detail="Park bulunamadı")
     
-    db_comment = CommentModel(park_id=park_id, **comment.model_dump())
+    author = current_user.full_name if current_user else comment.author_name
+    db_comment = CommentModel(park_id=park_id, author_name=author, text=comment.text, rating=comment.rating)
     db.add(db_comment)
     db.commit()
     db.refresh(db_comment)
