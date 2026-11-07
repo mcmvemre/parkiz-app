@@ -319,7 +319,6 @@ class _ParkMapScreenState extends State<ParkMapScreen> {
         title: Text(_isFilterActive ? 'Yakındaki Parklar (5 km)' : 'Parkiz - Canlı Harita'),
         backgroundColor: Theme.of(context).colorScheme.inversePrimary,
         actions: [
-          // Giriş Yap / Profil Butonu
           IconButton(
             icon: Icon(_authToken != null ? Icons.account_circle : Icons.login),
             tooltip: _authToken != null ? _currentUserName : 'Giriş Yap / Kayıt Ol',
@@ -704,3 +703,5 @@ class _ParkMapScreenState extends State<ParkMapScreen> {
         );
       },
     );
+  }
+}
