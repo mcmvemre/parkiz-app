@@ -3,6 +3,5 @@ uvicorn
 sqlalchemy
 psycopg2-binary
 pydantic
-passlib[bcrypt]
 pyjwt
 python-multipart

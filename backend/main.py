@@ -1,14 +1,14 @@
 import os
+import hashlib
 import datetime
 from typing import List, Optional
-from fastapi import FastAPI, Depends, HTTPException, status
+from fastapi import FastAPI, Depends, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from pydantic import BaseModel
 from sqlalchemy import create_engine, Column, Integer, String, Float, Text, Boolean, ForeignKey, text
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, Session, relationship
-from passlib.context import CryptContext
 import jwt
 
 SECRET_KEY = os.getenv("SECRET_KEY", "parkiz_super_secret_key_2026")
@@ -26,7 +26,6 @@ engine = create_engine(DATABASE_URL)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
 
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/auth/login", optional=True)
 
 # Veritabanı Modelleri
@@ -122,7 +121,7 @@ class NearbyParkRequest(BaseModel):
 class ImageUploadRequest(BaseModel):
     image_url: str
 
-app = FastAPI(title="Parkiz API", version="2.0.0")
+app = FastAPI(title="Parkiz API", version="2.1.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -139,12 +138,9 @@ def get_db():
     finally:
         db.close()
 
-# Yardımcı Auth Fonksiyonları
-def verify_password(plain_password, hashed_password):
-    return pwd_context.verify(plain_password, hashed_password)
-
-def get_password_hash(password):
-    return pwd_context.hash(password)
+# Sıfır Hata Şifreleme Yardımcıları (hashlib)
+def hash_pwd(password: str) -> str:
+    return hashlib.sha256(password.encode()).hexdigest()
 
 def create_access_token(data: dict):
     to_encode = data.copy()
@@ -166,7 +162,7 @@ def get_current_user_optional(token: Optional[str] = Depends(oauth2_scheme), db:
 
 @app.get("/")
 def read_root():
-    return {"message": "Parkiz Auth & Map Backend Live!"}
+    return {"message": "Parkiz API Live!"}
 
 # AUTH ENDPOINT'LERİ
 @app.post("/api/auth/register", response_model=UserResponse)
@@ -175,11 +171,10 @@ def register(user_data: UserRegister, db: Session = Depends(get_db)):
     if existing_user:
         raise HTTPException(status_code=400, detail="Bu e-posta adresi zaten kayıtlı.")
     
-    hashed_pwd = get_password_hash(user_data.password)
     new_user = UserModel(
         full_name=user_data.full_name,
         email=user_data.email,
-        hashed_password=hashed_pwd
+        hashed_password=hash_pwd(user_data.password)
     )
     db.add(new_user)
     db.commit()
@@ -189,7 +184,7 @@ def register(user_data: UserRegister, db: Session = Depends(get_db)):
 @app.post("/api/auth/login", response_model=Token)
 def login(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):
     user = db.query(UserModel).filter(UserModel.email == form_data.username).first()
-    if not user or not verify_password(form_data.password, user.hashed_password):
+    if not user or user.hashed_password != hash_pwd(form_data.password):
         raise HTTPException(status_code=400, detail="E-posta veya şifre hatalı.")
     
     access_token = create_access_token(data={"sub": user.email})

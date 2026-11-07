@@ -704,5 +704,3 @@ class _ParkMapScreenState extends State<ParkMapScreen> {
         );
       },
     );
-  }
-}
