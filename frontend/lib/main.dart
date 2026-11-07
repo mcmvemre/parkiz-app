@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_map/flutter_map.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:http/http.dart' as http;
+import 'package:image_picker/image_picker.dart';
 import 'package:latlong2/latlong.dart';
 
 void main() {
@@ -36,6 +37,7 @@ class ParkMapScreen extends StatefulWidget {
 class _ParkMapScreenState extends State<ParkMapScreen> {
   final String _backendUrl = 'https://parkiz-app.onrender.com/api/parks';
   final MapController _mapController = MapController();
+  final ImagePicker _picker = ImagePicker();
   
   List<dynamic> _parks = [];
   bool _isLoading = true;
@@ -138,6 +140,27 @@ class _ParkMapScreenState extends State<ParkMapScreen> {
     }
   }
 
+  Future<void> _uploadParkImage(int parkId) async {
+    final XFile? image = await _picker.pickImage(source: ImageSource.gallery);
+    if (image == null) return;
+
+    var request = http.MultipartRequest(
+      'POST',
+      Uri.parse('$_backendUrl/$parkId/upload-image'),
+    );
+    request.files.add(await http.MultipartFile.fromPath('file', image.path));
+
+    var streamedResponse = await request.send();
+    if (streamedResponse.statusCode == 200) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Fotoğraf başarıyla yüklendi!')),
+        );
+      }
+      _fetchParks();
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -184,7 +207,7 @@ class _ParkMapScreenState extends State<ParkMapScreen> {
                         height: 40,
                         child: Container(
                           decoration: BoxDecoration(
-                            color: Colors.blue.withOpacity(0.3),
+                            color: Colors.blue.withValues(alpha: 0.3),
                             shape: BoxShape.circle,
                             border: Border.all(color: Colors.blue, width: 2),
                           ),
@@ -203,7 +226,7 @@ class _ParkMapScreenState extends State<ParkMapScreen> {
                           child: const Icon(Icons.location_on, color: Colors.red, size: 40),
                         ),
                       );
-                    }).toList(),
+                    }),
                   ],
                 ),
               ],
@@ -235,6 +258,7 @@ class _ParkMapScreenState extends State<ParkMapScreen> {
   void _showParkDetails(BuildContext context, dynamic park) {
     final comments = park['comments'] as List<dynamic>? ?? [];
     final commentController = TextEditingController();
+    final imageUrl = park['image_url'];
 
     showModalBottomSheet(
       context: context,
@@ -267,8 +291,55 @@ class _ParkMapScreenState extends State<ParkMapScreen> {
                   ),
                 ),
               ),
-              Text(park['name'] ?? '', style: const TextStyle(fontSize: 22, fontWeight: FontWeight.bold)),
-              const SizedBox(height: 4),
+
+              ClipRRect(
+                borderRadius: BorderRadius.circular(12),
+                child: imageUrl != null && imageUrl.toString().isNotEmpty
+                    ? Image.network(
+                        imageUrl,
+                        height: 160,
+                        width: double.infinity,
+                        fit: BoxFit.cover,
+                      )
+                    : Container(
+                        height: 120,
+                        width: double.infinity,
+                        color: Colors.grey.shade200,
+                        child: Column(
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          children: [
+                            const Icon(Icons.image_not_supported, color: Colors.grey, size: 40),
+                            const SizedBox(height: 8),
+                            ElevatedButton.icon(
+                              onPressed: () {
+                                Navigator.pop(context);
+                                _uploadParkImage(park['id']);
+                              },
+                              icon: const Icon(Icons.add_a_photo, size: 18),
+                              label: const Text('Fotoğraf Ekle'),
+                            ),
+                          ],
+                        ),
+                      ),
+              ),
+              const SizedBox(height: 12),
+
+              Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  Expanded(
+                    child: Text(park['name'] ?? '', style: const TextStyle(fontSize: 22, fontWeight: FontWeight.bold)),
+                  ),
+                  IconButton(
+                    icon: const Icon(Icons.add_a_photo, color: Colors.teal),
+                    tooltip: 'Fotoğrafı Değiştir',
+                    onPressed: () {
+                      Navigator.pop(context);
+                      _uploadParkImage(park['id']);
+                    },
+                  ),
+                ],
+              ),
               Text(park['description'] ?? '', style: const TextStyle(color: Colors.grey)),
               const SizedBox(height: 12),
               
@@ -361,6 +432,7 @@ class _ParkMapScreenState extends State<ParkMapScreen> {
     final descController = TextEditingController();
     final latController = TextEditingController(text: initialPoint?.latitude.toStringAsFixed(6) ?? '40.9850');
     final lngController = TextEditingController(text: initialPoint?.longitude.toStringAsFixed(6) ?? '29.0520');
+    final imageController = TextEditingController();
     bool hasRamp = false;
     bool hasSwing = false;
 
@@ -377,6 +449,7 @@ class _ParkMapScreenState extends State<ParkMapScreen> {
                   children: [
                     TextField(controller: nameController, decoration: const InputDecoration(labelText: 'Park Adı')),
                     TextField(controller: descController, decoration: const InputDecoration(labelText: 'Açıklama')),
+                    TextField(controller: imageController, decoration: const InputDecoration(labelText: 'Fotoğraf URL (Opsiyonel)')),
                     TextField(controller: latController, decoration: const InputDecoration(labelText: 'Enlem (Lat)')),
                     TextField(controller: lngController, decoration: const InputDecoration(labelText: 'Boylam (Lng)')),
                     CheckboxListTile(
@@ -401,6 +474,7 @@ class _ParkMapScreenState extends State<ParkMapScreen> {
                     final newPark = {
                       "name": nameController.text,
                       "description": descController.text,
+                      "image_url": imageController.text.isNotEmpty ? imageController.text : null,
                       "latitude": double.parse(latController.text),
                       "longitude": double.parse(lngController.text),
                       "rating": 5.0,
