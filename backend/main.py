@@ -28,7 +28,6 @@ Base = declarative_base()
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/auth/login", optional=True)
 
-# Veritabanı Modelleri
 class UserModel(Base):
     __tablename__ = "users"
 
@@ -63,9 +62,12 @@ class CommentModel(Base):
 
     park = relationship("ParkModel", back_populates="comments")
 
-Base.metadata.create_all(bind=engine)
+# Tabloları oluştur/güncelle
+try:
+    Base.metadata.create_all(bind=engine)
+except Exception:
+    pass
 
-# Pydantic Şemaları
 class UserRegister(BaseModel):
     full_name: str
     email: str
@@ -121,7 +123,7 @@ class NearbyParkRequest(BaseModel):
 class ImageUploadRequest(BaseModel):
     image_url: str
 
-app = FastAPI(title="Parkiz API", version="2.1.0")
+app = FastAPI(title="Parkiz API", version="2.2.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -138,7 +140,6 @@ def get_db():
     finally:
         db.close()
 
-# Sıfır Hata Şifreleme Yardımcıları (hashlib)
 def hash_pwd(password: str) -> str:
     return hashlib.sha256(password.encode()).hexdigest()
 
@@ -156,15 +157,14 @@ def get_current_user_optional(token: Optional[str] = Depends(oauth2_scheme), db:
         email: str = payload.get("sub")
         if email is None:
             return None
+        return db.query(UserModel).filter(UserModel.email == email).first()
     except Exception:
         return None
-    return db.query(UserModel).filter(UserModel.email == email).first()
 
 @app.get("/")
 def read_root():
     return {"message": "Parkiz API Live!"}
 
-# AUTH ENDPOINT'LERİ
 @app.post("/api/auth/register", response_model=UserResponse)
 def register(user_data: UserRegister, db: Session = Depends(get_db)):
     existing_user = db.query(UserModel).filter(UserModel.email == user_data.email).first()
@@ -194,10 +194,13 @@ def login(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depend
         "user": user
     }
 
-# PARK & YORUM ENDPOINT'LERİ
 @app.get("/api/parks", response_model=List[ParkResponse])
 def get_parks(db: Session = Depends(get_db)):
-    return db.query(ParkModel).all()
+    try:
+        return db.query(ParkModel).all()
+    except Exception as e:
+        print("Hata get_parks:", e)
+        return []
 
 @app.post("/api/parks", response_model=ParkResponse)
 def create_park(park: ParkCreate, db: Session = Depends(get_db)):
@@ -227,32 +230,25 @@ def add_comment(
 
 @app.post("/api/parks/nearby", response_model=List[ParkResponse])
 def get_nearby_parks(req: NearbyParkRequest, db: Session = Depends(get_db)):
-    raw_query = text("""
-        SELECT *, (
-            6371 * acos(
-                cos(radians(:lat)) * cos(radians(latitude)) *
-                cos(radians(longitude) - radians(:lng)) +
-                sin(radians(:lat)) * sin(radians(latitude))
-            )
-        ) AS distance
-        FROM parks
-        WHERE (
-            6371 * acos(
-                cos(radians(:lat)) * cos(radians(latitude)) *
-                cos(radians(longitude) - radians(:lng)) +
-                sin(radians(:lat)) * sin(radians(latitude))
-            )
-        ) <= :radius
-        ORDER BY distance ASC;
-    """)
-    
-    result = db.execute(raw_query, {"lat": req.latitude, "lng": req.longitude, "radius": req.radius_km})
-    parks = result.fetchall()
-    
-    park_ids = [p.id for p in parks]
-    if not park_ids:
-        return []
-    return db.query(ParkModel).filter(ParkModel.id.in_(park_ids)).all()
+    try:
+        raw_query = text("""
+            SELECT id FROM parks
+            WHERE (
+                6371 * acos(
+                    cos(radians(:lat)) * cos(radians(latitude)) *
+                    cos(radians(longitude) - radians(:lng)) +
+                    sin(radians(:lat)) * sin(radians(latitude))
+                )
+            ) <= :radius
+        """)
+        result = db.execute(raw_query, {"lat": req.latitude, "lng": req.longitude, "radius": req.radius_km})
+        park_ids = [row[0] for row in result.fetchall()]
+        if not park_ids:
+            return []
+        return db.query(ParkModel).filter(ParkModel.id.in_(park_ids)).all()
+    except Exception as e:
+        print("Hata get_nearby_parks:", e)
+        return db.query(ParkModel).all()
 
 @app.post("/api/parks/{park_id}/upload-image")
 def update_park_image(park_id: int, req: ImageUploadRequest, db: Session = Depends(get_db)):
